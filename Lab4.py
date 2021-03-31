@@ -13,8 +13,9 @@ from tensorflow.keras.layers import Input, Dense, Reshape, Flatten
 from tensorflow.keras.layers import BatchNormalization, LeakyReLU
 from tensorflow.keras.layers import Conv2D, MaxPooling2D, Conv2DTranspose, UpSampling2D
 from tensorflow.keras.optimizers import Adam
-from scipy.misc import imsave
+from PIL import Image
 import random
+import matplotlib.pyplot as plt
 
 random.seed(1618)
 np.random.seed(1618)
@@ -22,12 +23,13 @@ tf.compat.v1.set_random_seed(1618)
 
 tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+# os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
 # NOTE: mnist_d is no credit
 # NOTE: cifar_10 is extra credit
 #DATASET = "mnist_d"
-DATASET = "mnist_f"
-#DATASET = "cifar_10"
+# DATASET = "mnist_f"
+DATASET = "cifar_10"
 
 if DATASET == "mnist_d":
     IMAGE_SHAPE = (IH, IW, IZ) = (28, 28, 1)
@@ -37,12 +39,12 @@ elif DATASET == "mnist_f":
     IMAGE_SHAPE = (IH, IW, IZ) = (28, 28, 1)
     CLASSLIST = ["top", "trouser", "pullover", "dress", "coat", "sandal", "shirt", "sneaker", "bag", "ankle boot"]
     # TODO: choose a label to train on from the CLASSLIST above
-    LABEL = "coat"
+    LABEL = "trouser"
 
 elif DATASET == "cifar_10":
     IMAGE_SHAPE = (IH, IW, IZ) = (32, 32, 3)
     CLASSLIST = ["airplane", "automobile", "bird", "cat", "deer", "dog", "frog", "horse", "ship", "truck"]
-    LABEL = "airplane"
+    LABEL = "cat"
 
 IMAGE_SIZE = IH*IW*IZ
 
@@ -81,7 +83,7 @@ def preprocessData(raw):
         c = CLASSLIST.index(LABEL)
         x = np.r_[xTrain, xTest]
         y = np.r_[yTrain, yTest].flatten()
-        ilist = [i for i in range(y.shape[0]) if y[i] == c]
+        ilist = [i for i in range(y.shape[0]) if y[i] == c]yeah
         xP = x[ilist]
     # NOTE: Normalize from 0 to 1 or -1 to 1
     #xP = xP/255.0
@@ -98,6 +100,12 @@ def buildDiscriminator():
 
     # TODO: build a discriminator which takes in a (28 x 28 x 1) image - possibly from mnist_f
     #       and possibly from the generator - and outputs a single digit REAL (1) or FAKE (0)
+    model.add(Flatten(input_shape = IMAGE_SHAPE))
+    model.add(Dense(512))
+    model.add(LeakyReLU(alpha = 0.2))
+    model.add(Dense(256))
+    model.add(LeakyReLU(alpha = 0.2))
+    model.add(Dense(1, activation = "sigmoid"))
 
     # Creating a Keras Model out of the network
     inputTensor = Input(shape = IMAGE_SHAPE)
@@ -109,12 +117,23 @@ def buildGenerator():
 
     # TODO: build a generator which takes in a (NOISE_SIZE) noise array and outputs a fake
     #       mnist_f (28 x 28 x 1) image
+    model.add(Dense(256, input_dim = NOISE_SIZE))
+    model.add(LeakyReLU(alpha = 0.2))
+    model.add(BatchNormalization(momentum = 0.8))
+    model.add(Dense(512))
+    model.add(LeakyReLU(alpha = 0.2))
+    model.add(BatchNormalization(momentum = 0.8))
+    model.add(Dense(1024))
+    model.add(LeakyReLU(alpha = 0.2))
+    model.add(BatchNormalization(momentum = 0.8))
+    model.add(Dense(IMAGE_SIZE, activation = "tanh"))
+    model.add(Reshape(IMAGE_SHAPE))
 
     # Creating a Keras Model out of the network
     inputTensor = Input(shape = (NOISE_SIZE,))
     return Model(inputTensor, model(inputTensor))
 
-def buildGAN(images, epochs = 40000, batchSize = 32, loggingInterval = 0):
+def buildGAN(images, epochs = 40000, batchSize = 32, loggingInterval = 0, ratio = 1):
     # Setup
     opt = Adam(lr = 0.0002)
     loss = "binary_crossentropy"
@@ -133,29 +152,39 @@ def buildGAN(images, epochs = 40000, batchSize = 32, loggingInterval = 0):
     # Training
     trueCol = np.ones((batchSize, 1))
     falseCol = np.zeros((batchSize, 1))
+
+    advLosses = []
+    genLosses = []
     for epoch in range(epochs):
 
         # Train discriminator with a true and false batch
         batch = images[np.random.randint(0, images.shape[0], batchSize)]
+        IH, IW, IZ = IMAGE_SHAPE
+        batch = batch.reshape(-1, IH, IW, IZ)
         noise = np.random.normal(0, 1, (batchSize, NOISE_SIZE))
         genImages = generator.predict(noise)
         advTrueLoss = adversary.train_on_batch(batch, trueCol)
         advFalseLoss = adversary.train_on_batch(genImages, falseCol)
         advLoss = np.add(advTrueLoss, advFalseLoss) * 0.5
+        advLosses.append(advLoss[0])
 
         # Train generator by training GAN while keeping adversary component constant
-        noise = np.random.normal(0, 1, (batchSize, NOISE_SIZE))
-        genLoss = gan.train_on_batch(noise, trueCol)
+        if epoch % ratio == 0:
+            noise = np.random.normal(0, 1, (batchSize, NOISE_SIZE))
+            genLoss = gan.train_on_batch(noise, trueCol)
+            genLosses.append(genLoss)
+        else:
+            genLosses.append(genLosses[-1])
 
         # Logging
         if loggingInterval > 0 and epoch % loggingInterval == 0:
             print("\tEpoch %d:" % epoch)
             print("\t\tDiscriminator loss: %f." % advLoss[0])
             print("\t\tDiscriminator accuracy: %.2f%%." % (100 * advLoss[1]))
-            print("\t\tGenerator loss: %f." % genLoss)
+            if epoch % ratio == 0: print("\t\tGenerator loss: %f." % genLoss)
             runGAN(generator, OUTPUT_DIR + "/" + OUTPUT_NAME + "_test_%d.png" % (epoch / loggingInterval))
 
-    return (generator, adversary, gan)
+    return (generator, adversary, gan, advLosses, genLosses)
 
 # Generates an image using given generator
 def runGAN(generator, outfile):
@@ -163,7 +192,10 @@ def runGAN(generator, outfile):
     img = generator.predict(noise)[0]               # run generator on noise
     img = np.squeeze(img)                           # readjust image shape if needed
     img = (0.5*img + 0.5)*255                       # adjust values to range from 0 to 255 as needed
-    imsave(outfile, img)                            # store resulting image
+    new_p = Image.fromarray(img.astype(np.uint8))
+    if new_p.mode != 'RGB':
+        new_p = new_p.convert('RGB')
+    new_p.save(outfile)                          # store resulting image
 
 
 ################################### RUNNING THE PIPELINE #############################
@@ -178,7 +210,14 @@ def main():
     # Filter for just the class we are trying to generate
     data = preprocessData(raw)
     # Create and train all facets of the GAN
-    (generator, adv, gan) = buildGAN(data, epochs = 60000, loggingInterval = 1000)
+    generator, adv, gan, advLosses, genLosses = buildGAN(data, epochs = 60000, loggingInterval = 1000)
+    plt.plot(advLosses, label="adv")
+    plt.plot(genLosses, label="gen")
+    plt.title("Loss Over Training Steps")
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend(loc="upper right")
+    plt.savefig('loss.png')
     # Utilize our spooky neural net gimmicks to create realistic counterfeit images
     for i in range(10):
         runGAN(generator, OUTPUT_DIR + "/" + OUTPUT_NAME + "_final_%d.png" % i)
