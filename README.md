@@ -1,1 +1,3 @@
-# CS390-NIP_Lab4
+# CS390NIP Lab 4: GANs
+
+![](generated_images.png)
